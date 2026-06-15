@@ -5,6 +5,7 @@ import {
 } from "@aws-sdk/client-s3";
 import type { CorsRule } from "./types";
 import { getS3Client } from "./s3-client";
+import { GarageS3Error } from "./errors";
 
 export async function getBucketCors(bucket: string): Promise<CorsRule[]> {
   const client = getS3Client();
@@ -30,7 +31,7 @@ export async function getBucketCors(bucket: string): Promise<CorsRule[]> {
     ) {
       return [];
     }
-    throw err;
+    throw toS3Error(err);
   }
 }
 
@@ -39,23 +40,46 @@ export async function putBucketCors(
   rules: CorsRule[],
 ): Promise<void> {
   const client = getS3Client();
-  await client.send(
-    new PutBucketCorsCommand({
-      Bucket: bucket,
-      CORSConfiguration: {
-        CORSRules: rules.map((rule) => ({
-          AllowedOrigins: rule.allowedOrigins,
-          AllowedMethods: rule.allowedMethods,
-          AllowedHeaders: rule.allowedHeaders,
-          ExposeHeaders: rule.exposeHeaders,
-          MaxAgeSeconds: rule.maxAgeSeconds,
-        })),
-      },
-    }),
-  );
+  try {
+    await client.send(
+      new PutBucketCorsCommand({
+        Bucket: bucket,
+        CORSConfiguration: {
+          CORSRules: rules.map((rule) => ({
+            AllowedOrigins: rule.allowedOrigins,
+            AllowedMethods: rule.allowedMethods,
+            AllowedHeaders: rule.allowedHeaders,
+            ExposeHeaders: rule.exposeHeaders,
+            MaxAgeSeconds: rule.maxAgeSeconds,
+          })),
+        },
+      }),
+    );
+  } catch (err: unknown) {
+    throw toS3Error(err);
+  }
 }
 
 export async function deleteBucketCors(bucket: string): Promise<void> {
   const client = getS3Client();
-  await client.send(new DeleteBucketCorsCommand({ Bucket: bucket }));
+  try {
+    await client.send(new DeleteBucketCorsCommand({ Bucket: bucket }));
+  } catch (err: unknown) {
+    throw toS3Error(err);
+  }
+}
+
+function toS3Error(err: unknown): unknown {
+  const error = err as { name?: string; Code?: string; $metadata?: { httpStatusCode?: number } };
+  const status = error.$metadata?.httpStatusCode;
+  if (status) {
+    return new GarageS3Error(
+      `S3 CORS request failed: ${error.name ?? error.Code ?? "Unknown"}`,
+      status,
+      error.name === "AccessDenied"
+        ? "The configured S3 key does not have permission to manage CORS on this bucket."
+        : undefined,
+    );
+  }
+  return err;
 }
